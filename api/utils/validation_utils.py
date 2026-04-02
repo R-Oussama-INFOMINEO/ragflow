@@ -389,6 +389,12 @@ class ParserConfig(Base):
     task_page_size: Annotated[int | None, Field(default=None, ge=1)]
     pages: Annotated[list[list[int]] | None, Field(default=None)]
     ext: Annotated[dict, Field(default={})]
+    # Video / Whisper backend config
+    whisper_backend: Annotated[str | None, Field(default=None)]
+    whisper_model: Annotated[str | None, Field(default=None)]
+    openai_api_key: Annotated[str | None, Field(default=None)]
+    video_title: Annotated[str | None, Field(default=None)]
+    # Car metadata fields are stored in DocMetadataService, not in ParserConfig
 
 
 class CreateDatasetReq(Base):
