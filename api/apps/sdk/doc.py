@@ -64,6 +64,7 @@ class Chunk(BaseModel):
     image_id: str = ""
     available: bool = True
     positions: list[list[int]] = Field(default_factory=list)
+    properties: dict = Field(default_factory=dict)
 
     @validator("positions")
     def validate_positions(cls, value):
@@ -1137,6 +1138,10 @@ async def list_chunks(tenant_id, dataset_id, document_id):
             "positions": chunk.get("position_int", []),
             "tag_kwd": chunk.get("tag_kwd", []),
             "tag_feas": chunk.get("tag_feas", {}),
+            "properties": {
+                k: chunk[k] for k in ("timestamp_seconds", "transcript_segment")
+                if k in chunk
+            },
         }
         res["chunks"].append(final_chunk)
         _ = Chunk(**final_chunk)
@@ -1157,6 +1162,10 @@ async def list_chunks(tenant_id, dataset_id, document_id):
                 "image_id": sres.field[id].get("img_id", ""),
                 "available": bool(int(sres.field[id].get("available_int", "1"))),
                 "positions": sres.field[id].get("position_int", []),
+                "properties": {
+                    k: sres.field[id][k] for k in ("timestamp_seconds", "transcript_segment")
+                    if k in sres.field[id]
+                },
             }
             res["chunks"].append(d)
             _ = Chunk(**d)  # validate the chunk
