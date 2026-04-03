@@ -234,3 +234,9 @@ bin/*
 tests/.env.test
 
 helm/values.yaml
+tests/*.pdf
+tests/*.jpg
+tests/*.jpeg
+tests/*.png
+tests/*.html
+tests/__pycache__/
