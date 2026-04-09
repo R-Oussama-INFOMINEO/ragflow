@@ -522,17 +522,16 @@ async def stellantis_ingest_document(tenant_id):
 @token_required
 async def stellantis_retrieve(tenant_id):
     """
-    Retrieve chunks across all datasets matching brand + model,
-    with optional metadata filters (year, market, trim, source_type).
+    Retrieve chunks from a specific analysis dataset by analysis_id.
+
+    The analysis_id is the dataset ID returned by POST /api/v1/stellantis/datasets.
+    The orchestrator creates the dataset, stores the analysis_id, and passes it
+    to all subsequent ingest and retrieve calls.
 
     Query parameters:
-      brand                : string, required
-      car_model            : string, required
-      question             : string, required
-      year                 : string, optional
-      market               : string, optional  — ISO code or full name
-      trim                 : string, optional
-      source_type          : string, optional  — "Video", "Docs", "Web", "Images"
+      analysis_id          : string, required  — dataset ID from create dataset response
+      question             : string, required  — natural language query
+      source_type          : string, optional  — filter by "Video", "Docs", "Web", "Images"
       top_n                : integer, optional — default 5
       similarity_threshold : float, optional   — default 0.1
 
@@ -544,99 +543,54 @@ async def stellantis_retrieve(tenant_id):
     args = request.args
 
     # ── Required params ───────────────────────────────────────────────────────
-    brand     = (args.get("brand") or "").strip()
-    car_model = (args.get("car_model") or "").strip()
-    question  = (args.get("question") or "").strip()
+    analysis_id = (args.get("analysis_id") or "").strip()
+    question    = (args.get("question") or "").strip()
 
-    err = _missing(brand, car_model, question)
+    err = _missing(analysis_id, question)
     if err:
         return get_error_argument_result(err)
 
     # ── Optional params ───────────────────────────────────────────────────────
-    year         = (args.get("year") or "").strip() or None
-    market       = (args.get("market") or "").strip() or None
-    trim         = (args.get("trim") or "").strip() or None
-    source_type  = (args.get("source_type") or "").strip() or None
-    top_n        = int(args.get("top_n", 5))
+    source_type   = (args.get("source_type") or "").strip() or None
+    top_n         = int(args.get("top_n", 5))
     sim_threshold = float(args.get("similarity_threshold", 0.1))
-    market_iso   = _normalize_market(market) if market else None
 
-    # ── Discover matching datasets by name prefix ─────────────────────────────
-    prefix = f"{brand}_{car_model}_"
-    tenants = TenantService.get_joined_tenants_by_user_id(tenant_id)
-    all_kbs, _ = KnowledgebaseService.get_list(
-        [m["tenant_id"] for m in tenants],
-        tenant_id,
-        page_number=1,
-        items_per_page=1000,
-        orderby="create_time",
-        desc=True,
-        id=None,
-        name=None,
-    )
+    # ── Verify dataset belongs to this tenant ─────────────────────────────────
+    if not KnowledgebaseService.accessible(kb_id=analysis_id, user_id=tenant_id):
+        return get_error_permission_result(
+            message=f"No authorization for dataset {analysis_id}"
+        )
 
-    matched_kbs = [kb for kb in all_kbs if kb.get("name", "").startswith(prefix)]
+    kb_ids = [analysis_id]
 
-    if year:
-        matched_kbs = [kb for kb in matched_kbs if f"_{year}_" in kb["name"]]
-    if market_iso:
-        matched_kbs = [kb for kb in matched_kbs if f"_{market_iso}_" in kb["name"]]
-    if trim:
-        matched_kbs = [kb for kb in matched_kbs if f"_{trim}_" in kb["name"]]
+    # ── Build metadata filter for source_type ────────────────────────────────
+    doc_ids = None
+    if source_type and source_type != "Video":
+        conditions = [
+            {"name": "source_type", "value": source_type, "comparison_operator": "="},
+        ]
+        metadata_condition = {"conditions": conditions, "logic": "and"}
+        metas   = DocMetadataService.get_meta_by_kbs(kb_ids)
+        doc_ids = meta_filter(metas, convert_conditions(metadata_condition), "and")
+        if not doc_ids:
+            return get_result(data={"total": 0, "chunks": [], "doc_aggs": {}})
 
-    if not matched_kbs:
-        return get_result(data={"total": 0, "chunks": [], "doc_aggs": {}})
-
-    kb_ids = [kb["id"] for kb in matched_kbs]
-
-    # ── Verify all datasets belong to this tenant ─────────────────────────────
-    for kb_id in kb_ids:
-        if not KnowledgebaseService.accessible(kb_id=kb_id, user_id=tenant_id):
-            return get_error_permission_result(
-                message=f"No authorization for dataset {kb_id}"
-            )
-
-    # ── Build metadata filter for source_type (and other fields) ─────────────
-    conditions = [
-        {"name": "brand",     "value": brand,     "comparison_operator": "="},
-        {"name": "car_model", "value": car_model, "comparison_operator": "="},
-    ]
-    if year:
-        conditions.append({"name": "year",   "value": year,       "comparison_operator": "="})
-    if market_iso:
-        conditions.append({"name": "market", "value": market_iso, "comparison_operator": "="})
-    if trim:
-        conditions.append({"name": "trim",   "value": trim,       "comparison_operator": "="})
-    if source_type:
-        conditions.append({"name": "source_type", "value": source_type, "comparison_operator": "="})
-
-    metadata_condition = {"conditions": conditions, "logic": "and"}
-
-    # ── Resolve doc_ids via metadata filter ───────────────────────────────────
-    metas   = DocMetadataService.get_meta_by_kbs(kb_ids)
-    doc_ids = meta_filter(metas, convert_conditions(metadata_condition), "and")
-
-    # video docs (size=0) are excluded from the documents API —
-    # if source_type is Video or unfiltered, allow doc_ids=None so video
-    # chunks are included in results
-    if source_type and source_type != "Video" and not doc_ids:
-        return get_result(data={"total": 0, "chunks": [], "doc_aggs": {}})
-
-    if source_type == "Video":
-        # let retrieval scan everything; video chunks will be present
-        doc_ids = None
-    elif not doc_ids:
-        doc_ids = None
-
-    # ── Load embedding model from first matched dataset ───────────────────────
+    # ── Load embedding model and retrieve ────────────────────────────────────
     try:
-        ok, kb = KnowledgebaseService.get_by_id(kb_ids[0])
+        ok, kb = KnowledgebaseService.get_by_id(analysis_id)
         if not ok:
             return get_error_data_result(message="Dataset not found")
 
         kbs_objs = KnowledgebaseService.get_by_ids(kb_ids)
         tenant_ids = list(set(kb_obj.tenant_id for kb_obj in kbs_objs))
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING, llm_name=kb.embd_id)
+
+        # ── Reranker — use tenant rerank model if available ───────────────────
+        rerank_mdl = None
+        try:
+            rerank_mdl = LLMBundle(kb.tenant_id, LLMType.RERANK)
+        except Exception:
+            pass  # reranker is optional — fall back to vector similarity only
 
         ranks = await settings.retriever.retrieval(
             question,
@@ -649,8 +603,8 @@ async def stellantis_retrieve(tenant_id):
             0.3,             # vector_similarity_weight
             1024,            # top_k candidate pool
             doc_ids,
-            rerank_mdl=None,
-            highlight=False,
+            rerank_mdl=rerank_mdl,
+            highlight=True,
             rank_feature=label_question(question, kbs_objs),
         )
 
@@ -675,8 +629,8 @@ async def stellantis_retrieve(tenant_id):
 
         logging.info(
             f"stellantis_retrieve: '{question}' → "
-            f"{len(ranks['chunks'])} chunks from {len(kb_ids)} dataset(s) "
-            f"[brand={brand} model={car_model} source={source_type}]"
+            f"{len(ranks['chunks'])} chunks from dataset {analysis_id} "
+            f"[source={source_type}]"
         )
         return get_result(data=ranks)
 

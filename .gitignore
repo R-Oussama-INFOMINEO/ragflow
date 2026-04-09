@@ -220,21 +220,12 @@ uv-aarch64*.tar.gz
 uv-aarch64-unknown-linux-gnu.tar.gz
 docker/launch_backend_service_windows.sh
 
-# C++ build directories
-internal/cpp/build/
+# Go server build output
+bin/
 internal/cpp/cmake-build-release/
 internal/cpp/cmake-build-debug/
-
-# Trae IDE config
-.trae/
-
-# Go server build output
-bin/*
-!bin/.gitkeep
+# Ignore helm values file since it contains secrets, the encrypted version is tracked in git
+helm/values.yaml
+# Test credentials — never commit
 tests/.env.test
-tests/*.pdf
-tests/*.jpg
-tests/*.jpeg
-tests/*.png
-tests/*.html
-tests/__pycache__/
+docker/.env

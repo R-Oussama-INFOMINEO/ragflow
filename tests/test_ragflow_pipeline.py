@@ -30,9 +30,8 @@ Model sizes (faster-whisper / openai-whisper):
   large  : best accuracy            — recommended for GCP GPU (~8s/video)
 
 Dataset naming convention:
-  {Brand}_{Model}_{Year}_{Market}_{Trim}_{YYYYMMDD}_{HHMM}
-  Example: Opel_Corsa_2023_UK_All_20260403_1143
-  All source types (video, PDF, web, images) share one dataset per analysis run.
+  {Brand}_{Model}_{Year}_{Market}_{Trim}_{SourceType}_{YYYYMMDD}_{HHMM}
+  Example: Opel_Corsa_2023_UK_All_Video_20260327_2005
 """
 
 import os
@@ -124,17 +123,15 @@ def _normalize_market(market: str) -> str:
 
 
 def _build_dataset_name(brand: str, car_model: str, year: str,
-                         market: str, trim: str, source_type: str = "") -> str:
+                         market: str, trim: str, source_type: str) -> str:
     """
     Build standardized dataset name:
-    {Brand}_{Model}_{Year}_{Market}_{Trim}_{YYYYMMDD}_{HHMM}
-    Example: Opel_Corsa_2023_UK_All_20260403_1143
-    source_type is no longer in the name — all source types share one dataset.
-    source_type param kept for backward compatibility but ignored.
+    {Brand}_{Model}_{Year}_{Market}_{Trim}_{SourceType}_{YYYYMMDD}_{HHMM}
+    Example: Opel_Corsa_2023_UK_All_Video_20260327_1445
     """
     from datetime import datetime
     now = datetime.now()
-    return f"{brand}_{car_model}_{year}_{market}_{trim}_{now.strftime('%Y%m%d')}_{now.strftime('%H%M')}"
+    return f"{brand}_{car_model}_{year}_{market}_{trim}_{source_type}_{now.strftime('%Y%m%d')}_{now.strftime('%H%M')}"
 
 
 async def create_analysis_dataset(
@@ -143,43 +140,56 @@ async def create_analysis_dataset(
     car_model: str,
     year: str,
     market: str,
-    trim: str = "All",
     whisper_backend: str = "youtube-transcript-api",
     whisper_model: str = "base",
+    trim: str = "All",
     openai_api_key: str = "",
 ) -> dict:
     """
-    MCP tool: create_analysis_dataset
-    Create a single RagFlow dataset for one analysis run.
-    All source types (video, PDF, web, images) share this dataset.
-    Dataset name: {Brand}_{Model}_{Year}_{Market}_{Trim}_{YYYYMMDD}_{HHMM}
-    chunk_method is "naive" by default — video documents override per-document
-    via parser_id="video" set in the ingest_video endpoint.
+    MCP tool: create_video_dataset
+    Create a RagFlow dataset for YouTube video ingestion.
+    Dataset name is auto-generated: {Brand}_{Model}_{Year}_{Market}_{Trim}_Video_{YYYYMMDD}_{HHMM}
 
     Args:
         cfg             : config dict from load_config()
-        brand           : car brand e.g. "Opel", "Peugeot"
-        car_model       : car model e.g. "Corsa", "208"
-        year            : model year e.g. "2023", "2025"
-        market          : target market ISO code or full name
-        trim            : car trim level (default: "All")
-        whisper_backend : default Whisper backend for video docs in this dataset
-        whisper_model   : Whisper model size for local backends
-        openai_api_key  : OpenAI key for "openai-api" backend
+        brand           : car brand e.g. "Opel", "Peugeot", "Fiat"
+        car_model       : car model e.g. "Corsa", "208", "500"
+        year            : model year e.g. "2023", "2024", "2025"
+        market          : target market — ISO code or full name:
+                            "UK" or "United Kingdom"
+                            "IE" or "Ireland"
+                            "FR" or "France"
+                            "DE" or "Germany"
+        whisper_backend : transcription backend:
+                            "youtube-transcript-api"  — fast, captions only (default)
+                            "faster-whisper"          — local CPU/GPU
+                            "openai-whisper"          — local CPU/GPU (original)
+                            "openai-api"              — cloud (needs key)
+        whisper_model   : "tiny" | "base" | "small" | "medium" | "large"
+        trim            : car trim level e.g. "GS", "Elegance", "All" (default: "All")
+        openai_api_key  : only for "openai-api" backend
 
     Returns:
         dict with dataset metadata including "id" and "name"
     """
     from datetime import date
+    if not openai_api_key:
+        openai_api_key = cfg.get("openai_api_key", "")
+
     market_iso = _normalize_market(market)
-    name = _build_dataset_name(brand, car_model, year, market_iso, trim)
+    name = _build_dataset_name(brand, car_model, year, market_iso, trim, "Video")
     retrieval_date = date.today().isoformat()
 
-    # dataset-level parser_config: only technical Whisper defaults
-    # business fields are stored per-document in DocMetadataService
     parser_config = {
-        "whisper_backend": whisper_backend,
-        "whisper_model":   whisper_model,
+        "whisper_backend":  whisper_backend,
+        "whisper_model":    whisper_model,
+        "brand":            brand,
+        "car_model":        car_model,
+        "year":             year,
+        "market":           market_iso,
+        "trim":             trim,
+        "source_type":      "Video",
+        "retrieval_date":   retrieval_date,
     }
     if openai_api_key and whisper_backend == "openai-api":
         parser_config["openai_api_key"] = openai_api_key
@@ -197,8 +207,8 @@ async def create_analysis_dataset(
         )
     data = resp.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"create_analysis_dataset failed: {data.get('message')}")
-    print(f"✅ Analysis Dataset created: {data['data']['name']}")
+        raise RuntimeError(f"create_video_dataset failed: {data.get('message')}")
+    print(f"✅ Video Dataset created: {data['data']['name']}")
     print(f"   id={data['data']['id']}")
     print(f"   brand={brand}, car_model={car_model}, year={year}, market={market_iso}, trim={trim}")
     print(f"   whisper_backend={whisper_backend}, retrieval_date={retrieval_date}")
@@ -265,13 +275,6 @@ async def ingest_video(
     dataset_id: str,
     url: str,
     title: str = "",
-    brand: str = "",
-    car_model: str = "",
-    year: str = "",
-    market: str = "",
-    trim: str = "",
-    source_type: str = "Video",
-    retrieval_date: str = "",
 ) -> dict:
     """
     MCP tool: ingest_video
@@ -750,12 +753,12 @@ def display_results(chunks: list, max_content_length: int = 200) -> None:
               f"(term={chunk.get('term_similarity', 0):.4f}, "
               f"vector={chunk.get('vector_similarity', 0):.4f})")
 
-        # Video-specific fields (timestamp_seconds and transcript_segment now in properties)
-        _props = chunk.get("properties", {})
-        if _props.get("timestamp_seconds") is not None:
-            print(f"  Video       : {chunk.get('docnm_kwd', 'N/A')}")
-            print(f"  Timestamp   : {_props.get('timestamp_seconds')}s")
-            print(f"  Deep-link   : {_props.get('transcript_segment', 'N/A')}")
+        # Video-specific fields
+        if chunk.get("youtube_url"):
+            print(f"  Video       : {chunk.get('video_title', 'N/A')}")
+            print(f"  YouTube URL : {chunk.get('youtube_url')}")
+            print(f"  Timestamp   : {chunk.get('timestamp_seconds')}s")
+            print(f"  Deep-link   : {chunk.get('transcript_segment')}")
         else:
             print(f"  Source      : {chunk.get('document_keyword', 'N/A')}")
 
@@ -830,32 +833,25 @@ async def get_datasets_by_brand_model(
     return matched
 
 
-async def retrieve_by_brand_model(
+async def retrieve_by_analysis_id(
     cfg: dict,
-    brand: str,
-    model: str,
+    analysis_id: str,
     question: str,
-    year: str | list | None = None,
-    market: str | None = None,
-    trim: str | None = None,
     source_type: str | None = None,
     top_n: int = 5,
     similarity_threshold: float = 0.1,
 ) -> list:
     """
-    MCP tool: retrieve_by_brand_model
-    Query all datasets for a brand+model, optionally scoped by year,
-    market, trim and/or source type. Main retrieval entry point for The Brain.
+    MCP tool: retrieve_by_analysis_id
+    Query a specific analysis dataset by its ID.
+    The analysis_id is returned by create_analysis_dataset() and stored
+    by the orchestrator for the duration of the analysis run.
 
     Args:
         cfg                  : config dict from load_config()
-        brand                : car brand e.g. "Opel"
-        model                : car model e.g. "Corsa"
+        analysis_id          : dataset ID from create_analysis_dataset()
         question             : natural language query
-        year                 : optional year filter
-        market               : optional market filter e.g. "UK", "FR"
-        trim                 : optional trim filter e.g. "All", "GS"
-        source_type          : optional source type filter e.g. "Video", "Docs"
+        source_type          : optional — "Video", "Docs", "Web", "Images"
         top_n                : max chunks to return (default: 5)
         similarity_threshold : min similarity 0.0-1.0 (default: 0.1)
 
@@ -863,93 +859,34 @@ async def retrieve_by_brand_model(
         list of chunk dicts with full metadata + source traceability
 
     Examples:
-        # All sources for Opel Corsa (all years, all markets)
-        retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance")
+        # All sources in one analysis run
+        await retrieve_by_analysis_id(cfg, "abc123...", "engine performance")
 
-        # Only 2025 IE Docs
-        retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance",
-                                year="2025", market="IE", source_type="Docs")
-
-        # Only UK Video
-        retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance",
-                                market="UK", source_type="Video")
+        # Only video chunks from this analysis run
+        await retrieve_by_analysis_id(cfg, "abc123...", "engine performance",
+                                      source_type="Video")
     """
-    datasets = await get_datasets_by_brand_model(cfg, brand, model, year, market, trim, source_type)
-
-    if not datasets:
-        print(f"⚠️  No datasets found for {brand} {model}")
-        return []
-
-    dataset_ids = [d["id"] for d in datasets]
-
-    # ── metadata-driven doc_id filtering ─────────────────────────────────────
-    _conditions = [
-        {"name": "brand",     "value": brand, "comparison_operator": "="},
-        {"name": "car_model", "value": model, "comparison_operator": "="},
-    ]
-    if year:
-        years = [year] if isinstance(year, str) else year
-        for y in years:
-            _conditions.append({"name": "year", "value": y, "comparison_operator": "="})
-    if market:
-        _conditions.append({"name": "market", "value": _normalize_market(market), "comparison_operator": "="})
-    if trim:
-        _conditions.append({"name": "trim", "value": trim, "comparison_operator": "="})
+    params = {
+        "analysis_id":          analysis_id,
+        "question":             question,
+        "top_n":                top_n,
+        "similarity_threshold": similarity_threshold,
+    }
     if source_type:
-        _conditions.append({"name": "source_type", "value": source_type, "comparison_operator": "="})
+        params["source_type"] = source_type
 
-    import json as _json
-    _meta_condition = {"conditions": _conditions, "logic": "and"}
-
-    _doc_ids = []
-    async with httpx.AsyncClient() as client:
-        for _ds_id in dataset_ids:
-            _dresp = await client.get(
-                f"{cfg['base_url']}/api/v1/datasets/{_ds_id}/documents",
-                headers=_headers(cfg),
-                params={"page_size": 1000},
-            )
-            for _doc in _dresp.json().get("data", {}).get("docs", []):
-                _meta = _doc.get("meta_fields", {})
-                _match = (
-                    _meta.get("brand") == brand and
-                    _meta.get("car_model") == model and
-                    (not year or _meta.get("year") == (year if isinstance(year, str) else year[0])) and
-                    (not market or _meta.get("market") == _normalize_market(market)) and
-                    (not trim or _meta.get("trim") == trim) and
-                    (not source_type or _meta.get("source_type") == source_type)
-                )
-                if _match:
-                    _doc_ids.append(_doc["id"])
-
-    # video docs (size=0) are excluded from documents API — handle separately
-    # if filtering by Video or no source_type filter, run without doc_ids
-    # so video chunks are included in results
-    _use_doc_filter = bool(_doc_ids) and source_type != "Video"
-
-    if source_type and source_type != "Video" and not _doc_ids:
-        print(f"⚠️  No {source_type} documents matched filters for {brand} {model}")
-        return []
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{cfg['base_url']}/api/v1/retrieval",
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.get(
+            f"{cfg['base_url']}/api/v1/stellantis/retrieve",
             headers=_headers(cfg),
-            json={
-                "question":             question,
-                "dataset_ids":          dataset_ids,
-                **({"doc_ids": _doc_ids} if _use_doc_filter else {}),
-                "similarity_threshold": similarity_threshold,
-                "top_n":                top_n,
-            },
+            params=params,
         )
     data = resp.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"retrieve_by_brand_model failed: {data.get('message')}")
-
+        raise RuntimeError(f"retrieve_by_analysis_id failed: {data.get('message')}")
     chunks = data.get("data", {}).get("chunks", [])
-    _filter_desc = f"brand={brand} model={model}" + (f" source={source_type}" if source_type else "")
-    print(f"🔍 Query: '{question}' → {len(chunks)} chunks [{_filter_desc}] from {len(dataset_ids)} dataset(s)")
+    _filter_desc = f"analysis_id={analysis_id}" + (f" source={source_type}" if source_type else "")
+    print(f"🔍 Query: '{question}' → {len(chunks)} chunks [{_filter_desc}]")
     return chunks
 
 
@@ -1010,9 +947,9 @@ async def run_video_pipeline(
     # Step 1 — Create analysis dataset (all source types share one dataset)
     dataset = await create_analysis_dataset(
         cfg, brand, car_model, year, market,
-        trim=trim,
         whisper_backend=whisper_backend,
         whisper_model=whisper_model,
+        trim=trim,
         openai_api_key=openai_api_key,
     )
     dataset_id = dataset["id"]
