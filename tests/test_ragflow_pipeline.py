@@ -183,13 +183,6 @@ async def create_analysis_dataset(
     parser_config = {
         "whisper_backend":  whisper_backend,
         "whisper_model":    whisper_model,
-        "brand":            brand,
-        "car_model":        car_model,
-        "year":             year,
-        "market":           market_iso,
-        "trim":             trim,
-        "source_type":      "Video",
-        "retrieval_date":   retrieval_date,
     }
     if openai_api_key and whisper_backend == "openai-api":
         parser_config["openai_api_key"] = openai_api_key
@@ -254,10 +247,12 @@ async def delete_dataset(cfg: dict, dataset_id: str) -> bool:
         True if deleted successfully
     """
     async with httpx.AsyncClient() as client:
-        resp = await client.delete(
+        import json as _json
+        resp = await client.request(
+            "DELETE",
             f"{cfg['base_url']}/api/v1/datasets",
-            headers=_headers(cfg),
-            json={"ids": [dataset_id]},
+            headers={**_headers(cfg), "Content-Type": "application/json"},
+            content=_json.dumps({"ids": [dataset_id]}),
         )
     data = resp.json()
     if data.get("code") != 0:
