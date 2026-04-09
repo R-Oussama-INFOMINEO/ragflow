@@ -270,23 +270,39 @@ async def ingest_video(
     dataset_id: str,
     url: str,
     title: str = "",
+    brand: str = "",
+    car_model: str = "",
+    year: str = "",
+    market: str = "",
+    trim: str = "All",
+    source_type: str = "Video",
+    retrieval_date: str = "",
 ) -> dict:
     """
     MCP tool: ingest_video
-    Register a YouTube video URL as a document in a dataset.
-    The dataset must have been created with chunk_method="video".
+    Register a YouTube video URL as a document in a dataset via the
+    Stellantis ingest endpoint. Business metadata is stored via
+    DocMetadataService — never in parser_config.
 
     Args:
-        cfg        : config dict from load_config()
-        dataset_id : target dataset ID
-        url        : YouTube URL (youtube.com/watch or youtu.be format)
-        title      : human-readable title stored with each chunk (optional)
+        cfg            : config dict from load_config()
+        dataset_id     : target dataset ID (analysis_id from create_analysis_dataset)
+        url            : YouTube URL (youtube.com/watch or youtu.be format)
+        title          : human-readable title stored with each chunk (optional)
+        brand          : car brand e.g. "Opel"
+        car_model      : car model e.g. "Corsa"
+        year           : model year e.g. "2023"
+        market         : target market e.g. "UK", "FR"
+        trim           : car trim level (default: "All")
+        source_type    : source type tag (default: "Video")
+        retrieval_date : ISO date string (default: today)
 
     Returns:
         dict with document metadata including "id" field
     """
     from datetime import date as _date
     _payload = {
+        "dataset_id":    dataset_id,
         "url":            url,
         "title":          title,
         "brand":          brand,
@@ -297,9 +313,9 @@ async def ingest_video(
         "source_type":    source_type,
         "retrieval_date": retrieval_date or _date.today().isoformat(),
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=False) as client:
         resp = await client.post(
-            f"{cfg['base_url']}/api/v1/datasets/{dataset_id}/videos",
+            f"{cfg['base_url']}/api/v1/stellantis/ingest/video",
             headers=_headers(cfg),
             json=_payload,
         )

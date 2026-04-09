@@ -145,14 +145,22 @@ def chunk(filename, binary=None, from_page=0, to_page=100_000,
     """
     Main entry point called by task_executor.build_chunks().
 
-    `filename` carries the YouTube URL — RagFlow stores the document
-    source path here, and for video documents we register the URL as
-    the filename.
+    `filename` carries the document title (task["name"]).
+    The actual YouTube URL is passed via kwargs["youtube_url"] by
+    task_executor, which fetches it from DocMetadataService.
 
     Returns a list of chunk dicts. Each must contain `content_with_weight`
     (the text to embed). All other keys become stored metadata.
     """
-    youtube_url: str = filename.strip()
+    # youtube_url must come from kwargs (set by task_executor from DocMetadataService)
+    # Never fall back to filename — filename is the human-readable title, not the URL
+    youtube_url: str = kwargs.get("youtube_url", "").strip()
+    if not youtube_url:
+        msg = "youtube_url not found in kwargs — task_executor must pass it from DocMetadataService"
+        logger.error("video.chunk: %s", msg)
+        if callback:
+            callback(-1, msg)
+        return []
 
     logger.info("video.chunk: starting ingestion for %s", youtube_url)
 
