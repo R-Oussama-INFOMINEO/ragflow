@@ -18,9 +18,16 @@ docker cp $BASE/docker/service_conf.yaml.template $CONTAINER:/ragflow/conf/servi
 docker exec $CONTAINER mkdir -p /ragflow/tests
 docker cp $BASE/common/constants.py            $CONTAINER:/ragflow/common/constants.py
 docker cp $BASE/rag/app/video.py               $CONTAINER:/ragflow/rag/app/video.py
+docker cp $BASE/rag/app/video_backends/__init__.py    $CONTAINER:/ragflow/rag/app/video_backends/__init__.py
+docker cp $BASE/rag/app/video_backends/youtube_transcript.py $CONTAINER:/ragflow/rag/app/video_backends/youtube_transcript.py
+docker cp $BASE/rag/app/video_backends/whisper_shared.py  $CONTAINER:/ragflow/rag/app/video_backends/whisper_shared.py
+docker cp $BASE/rag/app/video_backends/faster_whisper.py  $CONTAINER:/ragflow/rag/app/video_backends/faster_whisper.py
+docker cp $BASE/rag/app/video_backends/openai_whisper.py  $CONTAINER:/ragflow/rag/app/video_backends/openai_whisper.py
+docker cp $BASE/rag/app/video_backends/openai_api.py      $CONTAINER:/ragflow/rag/app/video_backends/openai_api.py
 docker cp $BASE/rag/svr/task_executor.py       $CONTAINER:/ragflow/rag/svr/task_executor.py
 docker cp $BASE/rag/nlp/search.py              $CONTAINER:/ragflow/rag/nlp/search.py
 docker cp $BASE/api/apps/sdk/dataset.py        $CONTAINER:/ragflow/api/apps/sdk/dataset.py
+docker cp $BASE/api/apps/sdk/stellantis.py       $CONTAINER:/ragflow/api/apps/sdk/stellantis.py
 docker cp $BASE/api/apps/sdk/doc.py            $CONTAINER:/ragflow/api/apps/sdk/doc.py
 docker cp $BASE/api/utils/validation_utils.py  $CONTAINER:/ragflow/api/utils/validation_utils.py
 docker cp $BASE/api/utils/api_utils.py         $CONTAINER:/ragflow/api/utils/api_utils.py
