@@ -14,8 +14,8 @@
 7. [API Usage](#api-usage)
 8. [YouTube Video Ingestion](#youtube-video-ingestion)
 9. [GCP Production Deployment](#gcp-production-deployment)
-10. [Development Workflow](#development-workflow)
-11. [Upgrading](#upgrading)
+10. [Stellantis API Endpoints](#stellantis-api-endpoints)
+11. [Development Workflow](#development-workflow)
 
 ---
 
@@ -56,7 +56,7 @@ wsl --shutdown
 
 ```bash
 cd ~
-git clone https://github.com/R-Oussama-INFOMINEO/ragflow.git
+git clone https://github.com/InfomineoGithub/ragflow.git
 cd ragflow
 git checkout feature/youtube-ingestion
 ```
@@ -75,16 +75,7 @@ docker compose -f docker-compose.yml up -d
 > cd ~/ragflow && docker build -f Dockerfile.custom -t ragflow-stellantis:v0.24.0 .
 > ```
 
-### 4. Apply the embedding model fix (run once after first start)
-
-```bash
-bash docker/fix-tenant-embedding.sh
-```
-
-> This fixes a v0.24.0 bug where the local TEI embedding model is registered
-> without the `@Builtin` provider suffix, causing all document parsing to fail.
-
-### 5. Watch startup logs
+### 4. Watch startup logs
 
 ```bash
 docker logs -f docker-ragflow-cpu-1
@@ -93,7 +84,7 @@ docker logs -f docker-ragflow-cpu-1
 Wait for the RAGFlow ASCII banner and `Running on all addresses (0.0.0.0)`.
 First startup takes **5–15 minutes** — DeepDoc models download from HuggingFace (~2GB).
 
-### 6. Access the UI
+### 5. Access the UI
 
 Open your browser at: `http://localhost`
 
@@ -103,17 +94,22 @@ Register a new account on first login.
 
 ## Configuration Overview
 
-All configuration lives in `docker/.env`. Key settings for this deployment:
+Configuration lives in `docker/.env` — **never committed to git**. Copy from the template:
 
-| Setting | Value | Notes |
-|---|---|---|
-| `DOC_ENGINE` | `infinity` | Vector DB backend (not Elasticsearch) |
-| `RAGFLOW_IMAGE` | `ragflow-stellantis:v0.24.0` | Custom image with video ingestion baked in |
-| `COMPOSE_PROFILES` | includes `tei-cpu` | Enables local CPU embedding |
-| `TEI_MODEL` | `BAAI/bge-small-en-v1.5` | CPU-friendly, ~1.2GB RAM |
-| `DOC_BULK_SIZE` | `4` | Chunk commit batch size |
-| `EMBEDDING_BATCH_SIZE` | `8` | Embedding batch size for CPU |
-| `TZ` | `Africa/Casablanca` | Change to your local timezone |
+```bash
+cp docker/.env.example docker/.env
+# Edit with your local values
+```
+
+Key settings for this deployment:
+
+| Setting | Local dev value | Production (GCP) | Notes |
+|---|---|---|---|
+| `DOC_ENGINE` | `infinity` | `elasticsearch` | Vector DB backend |
+| `RAGFLOW_IMAGE` | `ragflow-stellantis:v0.24.0` | `ragflow-stellantis:v0.24.0` | Custom image |
+| `COMPOSE_PROFILES` | `tei-cpu` | `tei-gpu` | Embedding service profile |
+| `TEI_MODEL` | `BAAI/bge-small-en-v1.5` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model |
+| `TZ` | your local timezone | `Asia/Shanghai` | Timezone |
 
 ### Services and ports
 
@@ -140,11 +136,6 @@ All configuration lives in `docker/.env`. Key settings for this deployment:
 **Cause:** v0.24.0 bug — tenant table stores embedding model ID without `@Builtin` suffix.
 
 **Fix:** Run once after fresh deployment:
-```bash
-bash docker/fix-tenant-embedding.sh
-```
-
-Or manually:
 ```bash
 docker exec docker-mysql-1 mysql -u root -pinfini_rag_flow rag_flow \
   -e "UPDATE tenant SET embd_id='BAAI/bge-small-en-v1.5@Builtin' \
@@ -389,30 +380,31 @@ This deployment includes a custom YouTube transcript ingestion pipeline built on
 ### Architecture
 
 ```
-YouTube URL / PDF / HTML / Image
+Orchestrator (The Brain)
     │
     ▼
-POST /api/v1/datasets                      ← create dataset with full metadata
-    │  brand, car_model, year, market,
-    │  trim, source_type, retrieval_date,
-    │  whisper_backend, whisper_model
+POST /api/v1/stellantis/datasets           ← create one analysis dataset per run
+    │  returns { analysis_id, name }       ← orchestrator stores analysis_id
     ▼
-POST /api/v1/datasets/{id}/videos          ← register YouTube URL
-POST /api/v1/datasets/{id}/documents       ← upload PDF/HTML/Image
+POST /api/v1/stellantis/ingest/video       ← register YouTube URL + business metadata
+POST /api/v1/stellantis/ingest/document    ← upload PDF / HTML / Image + business metadata
+    │  business metadata stored via DocMetadataService (never in parser_config)
+    │  brand, car_model, year, market, trim, source_type, retrieval_date
     ▼
-task_executor.py (parser_id="video"|"naive")
-    │  bypasses MinIO for video — no file upload
+task_executor.py (parser_id="video"|"naive"|"picture")
+    │  video: fetches youtube_url from DocMetadataService → passes to video.py
+    │  bypasses MinIO for video — no file upload needed
     ▼
-rag/app/video.py → _fetch_transcript()     ← video pipeline
-    ├── youtube-transcript-api  → fetch captions directly (fast, default)
-    ├── faster-whisper          → download audio + local transcription (CPU/GPU)
-    ├── openai-whisper          → download audio + local transcription (CPU/GPU)
-    └── openai-api              → download audio + cloud transcription (fastest)
+rag/app/video.py → _fetch_transcript()     ← video pipeline (orchestrator only)
+    ├── video_backends/youtube_transcript.py  → captions (fast, default) + Retry
+    ├── video_backends/faster_whisper.py      → local CTranslate2 (CPU/GPU)
+    ├── video_backends/openai_whisper.py      → local original lib (CPU/GPU)
+    └── video_backends/openai_api.py          → cloud REST API + Retry + Circuit Breaker
 
 DeepDoc Engine                             ← docs pipeline
-    ├── PDF parser
-    ├── HTML parser
-    └── Image parser (vision)
+    ├── PDF parser (naive)
+    ├── HTML parser (naive)
+    └── Image parser (picture / vision OCR)
     │
     │  merge into 60-second overlapping segments (video)
     │  or structured chunks (docs)
@@ -423,10 +415,12 @@ TEI embedding (BAAI/bge-small-en-v1.5@Builtin)
 Infinity vector store
     │  stores: youtube_url, video_id, video_title,
     │          timestamp_seconds, transcript_segment
-    │          + all dataset metadata fields
     ▼
-POST /api/v1/retrieval
-    │  brand-scoped: query by brand+model+year+market+trim
+GET /api/v1/stellantis/retrieve?analysis_id=...&question=...
+    │  single dataset lookup by analysis_id
+    │  optional source_type filter
+    │  optional reranker (falls back silently if not configured)
+    │  highlight=True for PDF bounding box support
     ▼
 chunks with timestamp deep-links + full source traceability
 ```
@@ -438,16 +432,19 @@ chunks with timestamp deep-links + full source traceability
 All datasets follow this standardized naming format:
 
 ```
-{Brand}_{Model}_{Year}_{Market}_{Trim}_{SourceType}_{YYYYMMDD}_{HHMM}
+{Brand}_{Model}_{Year}_{Market}_{Trim}_{YYYYMMDD}_{HHMM}
 ```
 
 **Examples:**
 ```
-Opel_Corsa_2023_UK_All_Video_20260327_2005
-Opel_Corsa_2025_IE_All_Docs_20260327_2005
-Peugeot_208_2023_FR_All_Docs_20260327_2009
-Opel_Corsa_2025_IE_GS_Docs_20260328_0900    ← trim-specific
+Opel_Corsa_2023_UK_All_20260327_2005
+Opel_Corsa_2025_IE_All_20260327_2005
+Peugeot_208_2023_FR_All_20260327_2009
+Opel_Corsa_2025_IE_GS_20260328_0900    ← trim-specific
 ```
+
+> All source types (Video, PDF, HTML, Image) share one dataset per analysis run.
+> Source type is tracked per-document via DocMetadataService metadata, not in the dataset name.
 
 **Market ISO codes:**
 
@@ -482,9 +479,10 @@ All backends return the same format: `[{"text": str, "start": float, "duration":
 
 ---
 
-### `parser_config` reference
+### Business metadata reference
 
-All fields stored in `parser_config` at dataset creation time:
+Business metadata is stored **per-document** via `DocMetadataService` — never in `parser_config`.
+This keeps `parser_config` focused on parser behaviour settings only.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -495,10 +493,16 @@ All fields stored in `parser_config` at dataset creation time:
 | `trim` | string | ✅ | Trim level e.g. `"All"`, `"GS"`, `"Elegance"` |
 | `source_type` | string | ✅ | Content type: `"Video"`, `"Docs"`, `"Web"`, `"Images"` |
 | `retrieval_date` | string | auto | Auto-generated ingestion date `"YYYY-MM-DD"` |
+
+### `parser_config` reference (video only)
+
+Only Whisper-related fields belong in `parser_config`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
 | `whisper_backend` | string | video only | Transcription backend (see above) |
 | `whisper_model` | string | video only | Model size: `tiny`, `base`, `small`, `medium`, `large` |
 | `openai_api_key` | string | openai-api only | Required only for `openai-api` backend |
-| `video_title` | string | video only | Human-readable title stored with chunks |
 
 > **Model size guidance:**
 > - `tiny` — fastest, lower accuracy (~29 sec on CPU for 3.5-min video)
@@ -512,67 +516,83 @@ All fields stored in `parser_config` at dataset creation time:
 | File | Change |
 |---|---|
 | `common/constants.py` | Added `ParserType.VIDEO = "video"` |
-| `rag/app/video.py` | Multi-backend transcript dispatcher + 4 backend implementations |
-| `rag/svr/task_executor.py` | Registered video parser in FACTORY; bypass MinIO for video tasks |
-| `rag/nlp/search.py` | Added video fields to Infinity retrieval field list and response dict |
-| `api/apps/sdk/dataset.py` | New `POST /datasets/{id}/videos` endpoint |
-| `api/apps/sdk/doc.py` | Extended `Chunk` model and both serializers with video fields |
-| `api/utils/validation_utils.py` | Added `"video"` to `chunk_method` validator + all metadata fields to `ParserConfig` |
+| `rag/app/video.py` | Orchestrator only — dispatches to `video_backends/` |
+| `rag/app/video_backends/youtube_transcript.py` | Backend 1: youtube-transcript-api + Retry |
+| `rag/app/video_backends/whisper_shared.py` | Shared: `download_audio()` + `with_retry()` utility |
+| `rag/app/video_backends/faster_whisper.py` | Backend 2: faster-whisper (local CTranslate2) |
+| `rag/app/video_backends/openai_whisper.py` | Backend 3: openai-whisper (local original lib) |
+| `rag/app/video_backends/openai_api.py` | Backend 4: OpenAI API + Retry + Circuit Breaker |
+| `rag/svr/task_executor.py` | Registered video parser; fetches `youtube_url` from DocMetadataService |
+| `rag/nlp/search.py` | Added video fields to Infinity retrieval field list |
+| `api/apps/sdk/stellantis.py` | 4 Stellantis REST endpoints (datasets, ingest/video, ingest/document, retrieve) |
+| `api/apps/sdk/dataset.py` | Business metadata stored via DocMetadataService per-document |
+| `api/apps/sdk/doc.py` | Generic `properties` dict in Chunk model (replaces video root fields) |
+| `api/utils/validation_utils.py` | Business fields removed from `ParserConfig` |
 | `api/utils/api_utils.py` | Added `"video": None` to `get_parser_config` map |
 | `api/db/init_data.py` | Added `video:Video` to tenant `parser_ids` |
-| `conf/infinity_mapping.json` | Added 5 video columns to Infinity schema |
-| `Dockerfile.custom` | ffmpeg, faster-whisper, yt-dlp, openai-whisper; SSL bypasses; pre-cached models |
-| `tests/test_ragflow_pipeline.py` | MCP-ready pipeline test utility with brand-scoped retrieval |
+| `conf/infinity_mapping.json` | Added 5 video columns in compact format |
+| `docker/.env.example` | Template for team — never commit `docker/.env` |
+| `Dockerfile.custom` | ffmpeg, all Whisper backends; SSL bypasses; pre-cached models |
+| `tests/test_ragflow_pipeline.py` | MCP-ready async pipeline test utility |
 
 ---
 
 ### Step-by-step ingestion workflow
 
-**Step 1 — Create a video dataset**
+**Step 1 — Create an analysis dataset**
 
 ```bash
 API_KEY="your_api_key"
 
-curl -s -X POST "http://localhost:9380/api/v1/datasets" \
+curl -s -X POST "http://localhost:9380/api/v1/stellantis/datasets" \
   -H "Authorization: Bearer ${API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Opel_Corsa_2023_UK_All_Video_20260327_2005",
-    "chunk_method": "video",
-    "embedding_model": "BAAI/bge-small-en-v1.5@Builtin",
-    "parser_config": {
-      "brand": "Opel",
-      "car_model": "Corsa",
-      "year": "2023",
-      "market": "UK",
-      "trim": "All",
-      "source_type": "Video",
-      "whisper_backend": "youtube-transcript-api",
-      "whisper_model": "base"
-    }
+    "brand": "Opel",
+    "car_model": "Corsa",
+    "year": "2023",
+    "market": "UK",
+    "trim": "All",
+    "whisper_backend": "youtube-transcript-api",
+    "whisper_model": "base"
   }' | python3 -m json.tool
 ```
 
-Save the returned `id` as `DATASET_ID`.
+Save the returned `id` as `ANALYSIS_ID` — this is your analysis_id for all subsequent calls.
 
 **Step 2 — Ingest a YouTube video**
 
 ```bash
-curl -s -X POST "http://localhost:9380/api/v1/datasets/${DATASET_ID}/videos" \
+curl -s -X POST "http://localhost:9380/api/v1/stellantis/ingest/video" \
   -H "Authorization: Bearer ${API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
+    "dataset_id": "'"${ANALYSIS_ID}"'",
     "url": "https://www.youtube.com/watch?v=VIDEO_ID",
-    "title": "Opel Corsa 2023 review"
+    "title": "Opel Corsa 2023 review",
+    "brand": "Opel", "car_model": "Corsa",
+    "year": "2023", "market": "UK",
+    "source_type": "Video"
   }' | python3 -m json.tool
 ```
 
-Save the returned `id` as `DOC_ID`.
-
-**Step 3 — Trigger processing**
+**Step 3 — Ingest a PDF/HTML/Image document**
 
 ```bash
-curl -s -X POST "http://localhost:9380/api/v1/datasets/${DATASET_ID}/chunks" \
+curl -s -X POST "http://localhost:9380/api/v1/stellantis/ingest/document" \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -F "dataset_id=${ANALYSIS_ID}" \
+  -F "brand=Opel" -F "car_model=Corsa" -F "year=2023" -F "market=UK" \
+  -F "source_type=Docs" \
+  -F "file=@/path/to/corsa_specs.pdf" | python3 -m json.tool
+```
+
+**Step 4 — Trigger processing**
+
+```bash
+DOC_ID="doc_id_from_ingest_response"
+
+curl -s -X POST "http://localhost:9380/api/v1/datasets/${ANALYSIS_ID}/chunks" \
   -H "Authorization: Bearer ${API_KEY}" \
   -H "Content-Type: application/json" \
   -d "{\"document_ids\": [\"${DOC_ID}\"]}" | python3 -m json.tool
@@ -588,27 +608,26 @@ Monitor with:
 docker logs docker-ragflow-cpu-1 --tail=5 -f 2>&1 | grep -i "done\|fail\|video\|whisper"
 ```
 
-**Step 4 — Brand-scoped retrieval**
+**Step 5 — Retrieve by analysis_id**
 
-Query across all datasets for a specific brand+model using `test_ragflow_pipeline.py`:
+```bash
+curl -s "http://localhost:9380/api/v1/stellantis/retrieve?analysis_id=${ANALYSIS_ID}&question=engine+performance&top_n=3" \
+  -H "Authorization: Bearer ${API_KEY}" | python3 -m json.tool
+```
+
+Or using the test utility:
 
 ```python
-from tests.test_ragflow_pipeline import load_config, retrieve_by_brand_model, display_results
+from tests.test_ragflow_pipeline import load_config, retrieve_by_analysis_id
 
 cfg = load_config()
 
-# Query all Opel Corsa sources (all years, all markets)
-chunks = retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance")
+# Query all sources in one analysis run
+chunks = await retrieve_by_analysis_id(cfg, analysis_id, "engine performance")
 
-# Query only 2025 IE Docs
-chunks = retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance",
-                                  year="2025", market="IE", source_type="Docs")
-
-# Query only UK Video
-chunks = retrieve_by_brand_model(cfg, "Opel", "Corsa", "engine performance",
-                                  market="UK", source_type="Video")
-
-display_results(chunks)
+# Query only Video sources
+chunks = await retrieve_by_analysis_id(cfg, analysis_id, "engine performance",
+                                        source_type="Video")
 ```
 
 ---
@@ -643,146 +662,63 @@ Each chunk in the retrieval response includes these video-specific fields:
 
 ---
 
-### Python ingestion helper
+### Python ingestion helper (using test_ragflow_pipeline.py)
+
+The recommended way to interact with the pipeline is via `tests/test_ragflow_pipeline.py`:
 
 ```python
-import requests
-from datetime import datetime, date
+import asyncio
+import importlib.util
 
-BASE_URL = "http://localhost:9380"
-API_KEY  = "your_api_key"
-HEADERS  = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+spec = importlib.util.spec_from_file_location("trp", "/ragflow/tests/test_ragflow_pipeline.py")
+trp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(trp)
+cfg = trp.load_config()
 
-MARKET_ISO_CODES = {
-    "United Kingdom": "UK", "Ireland": "IE", "France": "FR",
-    "Germany": "DE", "Italy": "IT", "Spain": "ES",
-    "Belgium": "BE", "Netherlands": "NL",
-}
+async def main():
+    # Step 1 — Create one analysis dataset
+    dataset = await trp.create_analysis_dataset(
+        cfg, "Opel", "Corsa", "2023", "UK",
+        whisper_backend="youtube-transcript-api"
+    )
+    analysis_id = dataset["id"]
+    print(f"analysis_id: {analysis_id}")
 
-def _normalize_market(market: str) -> str:
-    if market in MARKET_ISO_CODES.values():
-        return market
-    return MARKET_ISO_CODES.get(market, market.upper()[:2])
+    # Step 2 — Ingest a YouTube video
+    doc = await trp.ingest_video(
+        cfg, analysis_id,
+        url="https://www.youtube.com/watch?v=VIDEO_ID",
+        title="Opel Corsa 2023 review",
+        brand="Opel", car_model="Corsa", year="2023", market="UK",
+        source_type="Video"
+    )
 
-def _build_name(brand, car_model, year, market, trim, source_type) -> str:
-    now = datetime.now()
-    return f"{brand}_{car_model}_{year}_{market}_{trim}_{source_type}_{now.strftime('%Y%m%d')}_{now.strftime('%H%M')}"
+    # Step 3 — Ingest a PDF into the same dataset
+    doc = await trp.ingest_pdf(
+        cfg, analysis_id,
+        file_path="/ragflow/tests/Corsa_PDF.pdf",
+        brand="Opel", car_model="Corsa", year="2023", market="UK",
+        source_type="Docs"
+    )
 
-def create_video_dataset(
-    brand: str, car_model: str, year: str, market: str,
-    whisper_backend: str = "youtube-transcript-api",
-    whisper_model: str = "base",
-    trim: str = "All",
-    openai_api_key: str = "",
-) -> str:
-    """
-    Create a video dataset. Dataset name is auto-generated.
-    whisper_backend: "youtube-transcript-api" | "faster-whisper" | "openai-whisper" | "openai-api"
-    whisper_model:   "tiny" | "base" | "small" | "medium" | "large"
-    market:          ISO code ("UK", "FR") or full name ("United Kingdom", "France")
-    """
-    market_iso = _normalize_market(market)
-    name = _build_name(brand, car_model, year, market_iso, trim, "Video")
-    parser_config = {
-        "brand": brand, "car_model": car_model, "year": year,
-        "market": market_iso, "trim": trim, "source_type": "Video",
-        "retrieval_date": date.today().isoformat(),
-        "whisper_backend": whisper_backend, "whisper_model": whisper_model,
-    }
-    if openai_api_key and whisper_backend == "openai-api":
-        parser_config["openai_api_key"] = openai_api_key
-    resp = requests.post(f"{BASE_URL}/api/v1/datasets", headers=HEADERS, json={
-        "name": name, "chunk_method": "video",
-        "embedding_model": "BAAI/bge-small-en-v1.5@Builtin",
-        "parser_config": parser_config,
-    })
-    return resp.json()["data"]["id"]
+    # Step 4 — Trigger parsing and wait
+    await trp.trigger_parsing(cfg, analysis_id, doc["id"])
+    await trp.wait_for_completion(cfg, analysis_id, doc["id"], timeout=300)
 
-def create_pdf_dataset(
-    brand: str, car_model: str, year: str, market: str, trim: str = "All",
-) -> str:
-    """Create a Docs dataset for PDF/HTML/Image/Excel ingestion (DeepDoc parser)."""
-    market_iso = _normalize_market(market)
-    name = _build_name(brand, car_model, year, market_iso, trim, "Docs")
-    resp = requests.post(f"{BASE_URL}/api/v1/datasets", headers=HEADERS, json={
-        "name": name, "chunk_method": "naive",
-        "embedding_model": "BAAI/bge-small-en-v1.5@Builtin",
-        "parser_config": {
-            "brand": brand, "car_model": car_model, "year": year,
-            "market": market_iso, "trim": trim, "source_type": "Docs",
-            "retrieval_date": date.today().isoformat(),
-        },
-    })
-    return resp.json()["data"]["id"]
+    # Step 5 — Retrieve by analysis_id
+    chunks = await trp.retrieve_by_analysis_id(
+        cfg, analysis_id, "engine performance", top_n=3
+    )
 
-def get_datasets_by_brand_model(
-    brand: str, model: str,
-    year: str | None = None,
-    market: str | None = None,
-    source_type: str | None = None,
-) -> list:
-    """
-    Find all datasets for a brand+model, optionally filtered by year, market, source_type.
-    Returns list of dataset dicts with id, name, chunk_count.
-    """
-    resp = requests.get(f"{BASE_URL}/api/v1/datasets", headers=HEADERS,
-                        params={"page_size": 100})
-    datasets = resp.json()["data"]
-    prefix = f"{brand}_{model}_"
-    matched = [d for d in datasets if d["name"].startswith(prefix)]
-    if year:
-        matched = [d for d in matched if f"_{year}_" in d["name"]]
-    if market:
-        market_iso = _normalize_market(market)
-        matched = [d for d in matched if f"_{market_iso}_" in d["name"]]
-    if source_type:
-        matched = [d for d in matched if f"_{source_type}_" in d["name"]]
-    return matched
+    # Print results
+    for c in chunks:
+        props = c.get("properties", {})
+        if props.get("timestamp_seconds") is not None:
+            print(f"[Video {props['timestamp_seconds']}s] {c['content'][:100]}")
+        else:
+            print(f"[Doc] {c['content'][:100]}")
 
-def retrieve_by_brand_model(
-    brand: str, model: str, question: str,
-    year: str | None = None,
-    market: str | None = None,
-    source_type: str | None = None,
-    top_n: int = 5,
-) -> list:
-    """
-    Query all datasets for a brand+model. Optionally filter by year, market, source_type.
-    Returns chunks with full metadata + source traceability.
-    """
-    datasets = get_datasets_by_brand_model(brand, model, year, market, source_type)
-    if not datasets:
-        return []
-    dataset_ids = [d["id"] for d in datasets]
-    resp = requests.post(f"{BASE_URL}/api/v1/retrieval", headers=HEADERS, json={
-        "question": question, "dataset_ids": dataset_ids,
-        "similarity_threshold": 0.1, "top_n": top_n,
-    })
-    return resp.json()["data"]["chunks"]
-
-# ── Usage examples ────────────────────────────────────────────────────────────
-
-# Create and ingest Opel Corsa 2023 UK video
-ds_id = create_video_dataset("Opel", "Corsa", "2023", "UK",
-                              whisper_backend="youtube-transcript-api")
-
-# Create and ingest Opel Corsa 2025 IE spec sheet
-ds_id = create_pdf_dataset("Opel", "Corsa", "2025", "IE")
-
-# Query all Opel Corsa sources (all years, all markets)
-chunks = retrieve_by_brand_model("Opel", "Corsa", "engine performance")
-
-# Query only 2025 IE Docs
-chunks = retrieve_by_brand_model("Opel", "Corsa", "engine performance",
-                                  year="2025", market="IE", source_type="Docs")
-
-# Print results with deeplinks
-for c in chunks:
-    if c.get("youtube_url"):
-        print(f"[{c['timestamp_seconds']}s] {c['content'][:100]}")
-        print(f"  Watch: {c['transcript_segment']}")
-    else:
-        print(f"[PDF] {c['content'][:100]}")
+asyncio.run(main())
 ```
 
 ### Requirements and constraints
@@ -835,6 +771,36 @@ from scratch on the GCP instance. Do not migrate data volumes from local to GCP.
 
 ---
 
+---
+
+## Stellantis API Endpoints
+
+The pipeline exposes 4 dedicated REST endpoints under `/api/v1/stellantis/`:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/v1/stellantis/datasets` | Create one analysis dataset per run |
+| `POST` | `/api/v1/stellantis/ingest/video` | Ingest YouTube video with business metadata |
+| `POST` | `/api/v1/stellantis/ingest/document` | Ingest PDF, HTML or Image with business metadata |
+| `GET` | `/api/v1/stellantis/retrieve` | Retrieve chunks by analysis_id |
+
+All endpoints:
+- Require Bearer token authentication
+- Store business metadata via `DocMetadataService` — never in `parser_config`
+- Follow existing RagFlow response conventions (`get_result` / `get_error_data_result`)
+
+### Retrieve endpoint parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `analysis_id` | string | ✅ | Dataset ID from create dataset response |
+| `question` | string | ✅ | Natural language query |
+| `source_type` | string | optional | Filter by `"Video"`, `"Docs"`, `"Web"`, `"Images"` |
+| `top_n` | integer | optional | Max chunks to return (default: 5) |
+| `similarity_threshold` | float | optional | Min similarity 0.0–1.0 (default: 0.1) |
+
+---
+
 ## Development Workflow
 
 ### Making code changes
@@ -879,14 +845,19 @@ The script re-copies these files on every deploy:
 ```
 common/constants.py
 rag/app/video.py
+rag/app/video_backends/  (all 5 files)
 rag/svr/task_executor.py
 rag/nlp/search.py
 api/apps/sdk/dataset.py
+api/apps/sdk/stellantis.py
 api/apps/sdk/doc.py
 api/utils/validation_utils.py
 api/utils/api_utils.py
 api/db/init_data.py
 conf/infinity_mapping.json
+tests/test_ragflow_pipeline.py
+tests/.env.test
+tests/  (test asset files)
 ```
 
 ## Stack management commands
@@ -919,4 +890,4 @@ bash docker/deploy-local.sh
 
 ---
 
-*Last updated: March 2026 | RagFlow v0.24.0 | Branch: `feature/youtube-ingestion` | Whisper multi-backend + brand/model/year/market/trim metadata structure*
+*Last updated: April 2026 | RagFlow v0.24.0 | Branch: `feature/stellantis-pipeline` | One-dataset-per-analysis-run | analysis_id retrieval | Retry + Circuit Breaker | video_backends/ package*

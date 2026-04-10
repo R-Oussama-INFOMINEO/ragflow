@@ -1,7 +1,6 @@
 # RagFlow Pipeline Testing Guide
-> Multi-source ingestion (YouTube video + PDF + Web + Images) + Metadata-driven retrieval  
-> Branch: `feature/youtube-ingestion` | Tested on: RagFlow v0.24.0  
-> Test video: [Opel Corsa 2023 review](https://www.youtube.com/watch?v=QFzEVtY_1lQ)
+> Multi-source ingestion (YouTube video + PDF + Web + Images) + analysis_id retrieval  
+> Branch: `feature/stellantis-pipeline` | Tested on: RagFlow v0.24.0
 
 ---
 
@@ -145,26 +144,36 @@ Dataset names are **auto-generated** from metadata — no manual naming needed.
 ### Key functions
 
 ```python
-# ── Dataset creation ────────────────────────────────────────────────────────
+# ── Dataset management ──────────────────────────────────────────────────────
 create_analysis_dataset(cfg, brand, car_model, year, market,
                         trim, whisper_backend, whisper_model, openai_api_key)
 # backward-compatible wrappers (delegate to create_analysis_dataset):
 create_video_dataset(cfg, brand, car_model, year, market, ...)
 create_pdf_dataset(cfg, brand, car_model, year, market, trim)
+create_web_dataset(cfg, brand, car_model, year, market, trim)
+create_image_dataset(cfg, brand, car_model, year, market, trim)
+list_datasets(cfg)
+delete_dataset(cfg, dataset_id)
 
 # ── Ingestion ───────────────────────────────────────────────────────────────
+# All ingest functions call Stellantis endpoints — business metadata stored
+# via DocMetadataService, never in parser_config
 ingest_video(cfg, dataset_id, url, title,
              brand, car_model, year, market, trim, source_type, retrieval_date)
-ingest_pdf(cfg, dataset_id, file_path)
+ingest_pdf(cfg, dataset_id, file_path,
+           brand, car_model, year, market, trim, source_type, retrieval_date)
+ingest_html(cfg, dataset_id, source,     # local path or URL
+            brand, car_model, year, market, trim, source_type, retrieval_date)
+ingest_image(cfg, dataset_id, source,    # local path or URL
+             brand, car_model, year, market, trim, source_type, retrieval_date)
 
 # ── Processing ──────────────────────────────────────────────────────────────
 trigger_parsing(cfg, dataset_id, doc_id)
 wait_for_completion(cfg, dataset_id, doc_id, timeout, poll_interval)
 
 # ── Retrieval ───────────────────────────────────────────────────────────────
-retrieve(cfg, dataset_id, question, top_n, similarity_threshold)
-retrieve_by_brand_model(cfg, brand, model, question,
-                        year, market, trim, source_type, top_n)
+retrieve_by_analysis_id(cfg, analysis_id, question,
+                        source_type, top_n, similarity_threshold)
 display_results(chunks, max_content_length)
 
 # ── Full pipeline runners ───────────────────────────────────────────────────
@@ -182,19 +191,32 @@ The recommended way to run any test:
 
 ```bash
 docker exec docker-ragflow-cpu-1 /ragflow/.venv/bin/python3 -c "
-import sys, importlib.util
+import importlib.util, asyncio
 spec = importlib.util.spec_from_file_location('trp', '/ragflow/tests/test_ragflow_pipeline.py')
 trp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trp)
 cfg = trp.load_config()
-trp.run_video_pipeline(
-    cfg=cfg,
-    url='https://www.youtube.com/watch?v=QFzEVtY_1lQ',
-    title='Opel Corsa 2023 review',
-    question='engine performance and fuel economy',
-    brand='Opel', car_model='Corsa', year='2023', market='UK', trim='All',
-    whisper_backend='youtube-transcript-api', cleanup=True,
-)
+
+async def test():
+    # Step 1 — Create one analysis dataset
+    dataset = await trp.create_analysis_dataset(cfg, 'Opel', 'Corsa', '2023', 'UK')
+    analysis_id = dataset['id']
+    print(f'analysis_id: {analysis_id}')
+
+    # Step 2 — Ingest video (calls /api/v1/stellantis/ingest/video)
+    doc = await trp.ingest_video(cfg, analysis_id,
+        'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+        'Me at the zoo',
+        brand='Opel', car_model='Corsa', year='2023', market='UK')
+    await trp.trigger_parsing(cfg, analysis_id, doc['id'])
+    await trp.wait_for_completion(cfg, analysis_id, doc['id'], timeout=120)
+
+    # Step 3 — Retrieve by analysis_id (calls /api/v1/stellantis/retrieve)
+    chunks = await trp.retrieve_by_analysis_id(cfg, analysis_id,
+        'engine performance', top_n=3)
+    print(f'Retrieved {len(chunks)} chunks')
+
+asyncio.run(test())
 "
 ```
 
@@ -212,7 +234,7 @@ trp.run_video_pipeline(
 trp.run_video_pipeline(
     cfg=cfg,
     url="https://www.youtube.com/watch?v=QFzEVtY_1lQ",
-    title="Opel Corsa 2023 review",
+    title="Opel Corsa 2023 UK Review",
     question="engine performance and fuel economy",
     brand="Opel", car_model="Corsa", year="2023", market="UK", trim="All",
     whisper_backend="youtube-transcript-api",
@@ -232,7 +254,7 @@ trp.run_video_pipeline(
 trp.run_video_pipeline(
     cfg=cfg,
     url="https://www.youtube.com/watch?v=QFzEVtY_1lQ",
-    title="Opel Corsa 2023 review",
+    title="Opel Corsa 2023 UK Review",
     question="engine performance and fuel economy",
     brand="Opel", car_model="Corsa", year="2023", market="UK", trim="All",
     whisper_backend="faster-whisper",
@@ -258,7 +280,7 @@ trp.run_video_pipeline(
 trp.run_video_pipeline(
     cfg=cfg,
     url="https://www.youtube.com/watch?v=QFzEVtY_1lQ",
-    title="Opel Corsa 2023 review",
+    title="Opel Corsa 2023 UK Review",
     question="engine performance and fuel economy",
     brand="Opel", car_model="Corsa", year="2023", market="UK", trim="All",
     whisper_backend="openai-whisper",
@@ -281,7 +303,7 @@ trp.run_video_pipeline(
 trp.run_video_pipeline(
     cfg=cfg,
     url="https://www.youtube.com/watch?v=QFzEVtY_1lQ",
-    title="Opel Corsa 2023 review",
+    title="Opel Corsa 2023 UK Review",
     question="engine performance and fuel economy",
     brand="Opel", car_model="Corsa", year="2023", market="UK", trim="All",
     whisper_backend="openai-api",
@@ -299,7 +321,7 @@ trp.run_video_pipeline(
 trp.compare_backends(
     cfg=cfg,
     url="https://www.youtube.com/watch?v=QFzEVtY_1lQ",
-    title="Opel Corsa 2023 review",
+    title="Opel Corsa 2023 UK Review",
     question="engine performance and fuel economy",
     brand="Opel", car_model="Corsa", year="2023", market="UK", trim="All",
     backends=[
@@ -350,78 +372,59 @@ trp.run_pdf_pipeline(
 
 ---
 
-### Option G — Metadata-driven retrieval across existing datasets
+### Option G — Retrieve by analysis_id
 
-**When to use:** Querying existing datasets by brand/model — the main retrieval entry point for The Brain.
+**When to use:** The main retrieval entry point. The orchestrator stores the `analysis_id` returned by `create_analysis_dataset()` and passes it to retrieve.
 
 ```python
-# Query across ALL Opel Corsa sources (all years, all markets, all source types)
-chunks = trp.retrieve_by_brand_model(cfg, "Opel", "Corsa",
-                                     "engine performance")
+analysis_id = "your_analysis_id_from_create_dataset"
 
-# Query only Video sources for Opel Corsa UK 2023
-chunks = trp.retrieve_by_brand_model(cfg, "Opel", "Corsa",
-                                     "engine performance",
-                                     year="2023", market="UK",
-                                     source_type="Video")
+# Query all sources in one analysis run
+chunks = await trp.retrieve_by_analysis_id(cfg, analysis_id,
+                                           "engine performance")
 
-# Query only Docs for Opel Corsa IE 2025
-chunks = trp.retrieve_by_brand_model(cfg, "Opel", "Corsa",
-                                     "engine performance",
-                                     year="2025", market="IE",
-                                     source_type="Docs")
+# Query only Video sources
+chunks = await trp.retrieve_by_analysis_id(cfg, analysis_id,
+                                           "engine performance",
+                                           source_type="Video")
+
+# Query only PDF/HTML/Image sources
+chunks = await trp.retrieve_by_analysis_id(cfg, analysis_id,
+                                           "engine performance",
+                                           source_type="Docs")
 
 trp.display_results(chunks)
 ```
 
-**How filtering works:**
+**How it works:**
 
-`retrieve_by_brand_model` uses `metadata_condition` to filter documents by their stored metadata before running retrieval. This means filtering is accurate even when multiple brands/models share datasets.
+`retrieve_by_analysis_id` calls `GET /api/v1/stellantis/retrieve` with the `analysis_id`.
+The Stellantis endpoint handles:
+- Single dataset lookup by ID — no name scanning
+- Optional `source_type` filtering via DocMetadataService
+- Optional reranker (falls back silently if not configured)
+- `highlight=True` for PDF bounding box coordinates
 
 **Available filters:**
 
 | Parameter | Type | Description |
 |---|---|---|
-| `year` | string or None | `"2023"`, `"2025"` or `None` for all years |
-| `market` | string or None | ISO code `"UK"`, `"FR"`, `"IE"` or `None` for all markets |
-| `trim` | string or None | `"All"`, `"GS"`, `"Elegance"` or `None` for all trims |
 | `source_type` | string or None | `"Video"`, `"Docs"`, `"Web"`, `"Images"` or `None` for all |
+| `top_n` | integer | Max chunks to return (default: 5) |
+| `similarity_threshold` | float | Min similarity 0.0–1.0 (default: 0.1) |
 
 ---
 
 ## Real Results — YouTube Backends
 
-**Video:** [Opel Corsa 2023 review](https://www.youtube.com/watch?v=QFzEVtY_1lQ)  
-**Dataset:** `Opel_Corsa_2023_UK_All_20260403_1143`  
-**Query:** `"engine performance and fuel economy"`  
+**Video:** [Opel Corsa 2023 UK Review](https://www.youtube.com/watch?v=QFzEVtY_1lQ)  
+**Dataset:** `Opel_Corsa_2023_UK_All_20260409_1856`  
+**Query:** `"zoo animals"`  
 **Model size:** `tiny` for all local backends
 
 ---
 
-### Backend 1: `youtube-transcript-api`
-
-```
-✅ Analysis Dataset created: Opel_Corsa_2023_UK_All_20260403_1143
-✅ Video registered: https://www.youtube.com/watch?v=QFzEVtY_1lQ
-   doc_id=..., title=Opel Corsa 2023 review
-✅ Parsing complete in 10s — 6 chunks produced
-🔍 Query: 'engine performance and fuel economy' → 1 chunks returned
-
-  Chunk #1
-  Similarity  : 0.6839 (term=0.6839, vector=0.6839)
-  Video       : Opel Corsa 2023 review
-  Timestamp   : 60s
-  Deep-link   : https://www.youtube.com/watch?v=QFzEVtY_1lQ&t=60s
-  Content     : Britain it must have something up its sleeve and you know what it kind
-                of does let's take it for a drive I'll show you what I mean it's this
-                little engine we got a 1.2 L turbocharged petrol engine and...
-
-⏱️  Total pipeline time: 15.0s
-```
-
----
-
-### Backend 2: `faster-whisper` (tiny/CPU)
+### Backend 1: `faster-whisper` (tiny/CPU)
 
 ```
 ✅ Parsing complete in 68s — 6 chunks produced
@@ -441,7 +444,7 @@ trp.display_results(chunks)
 
 ---
 
-### Backend 3: `openai-whisper` (tiny/CPU)
+### Backend 2: `openai-whisper` (tiny/CPU)
 
 ```
 ✅ Parsing complete in 63s — 6 chunks produced
@@ -461,7 +464,7 @@ trp.display_results(chunks)
 
 ---
 
-### Backend 4: `openai-api` (cloud)
+### Backend 3: `openai-api` (cloud)
 
 ```
 ✅ Parsing complete in 31s — 6 chunks produced
@@ -530,14 +533,23 @@ With the new one-dataset architecture, video and PDF are ingested into the same 
 
 ## Full Comparison Summary
 
-| Parser | Source | Chunks | Parse Time | Top Similarity |
+| Source Type | Parser | Chunks | Parse Time | Top Similarity |
 |---|---|---|---|---|
-| `youtube-transcript-api` | Corsa video 2023 UK | 6 | 10s | 0.6839 |
-| `faster-whisper tiny` | Corsa video 2023 UK | 6 | 68s | 0.6881 |
-| `openai-whisper tiny` | Corsa video 2023 UK | 6 | 63s | 0.6868 |
-| `openai-api` | Corsa video 2023 UK | 6 | 31s | 0.6968 |
-| `PDF (naive)` | Corsa specs 2025 IE | 12 | 208s | 0.7133 |
-| `PDF (naive)` | Peugeot 208 2023 FR | 16 | 101s | — |
+| Video (`openai-whisper`) | video | 6 | 63.6s | 0.677 |
+| PDF | naive | 17 | ~0s (cached) | 0.659 |
+| Image (JPG) | picture | 18 | ~0s (cached) | 0.680 |
+| HTML | naive | 19 | ~0s (cached) | 0.689 |
+
+All 4 source types verified in a single analysis dataset (`Opel_Corsa_2023_UK_All_20260409_1856`).
+
+**Historical backend comparison (Corsa video 2023 UK):**
+
+| Backend | Chunks | Parse Time | Top Similarity |
+|---|---|---|---|
+| `youtube-transcript-api` | 6 | 10s | 0.6839 |
+| `faster-whisper tiny` | 6 | 68s | 0.6881 |
+| `openai-whisper tiny` | 6 | 63s | 0.6868 |
+| `openai-api` | 6 | 31s | 0.6968 |
 
 ### Key observations
 
@@ -575,19 +587,23 @@ create_analysis_dataset(cfg, brand, car_model, year, market,
 list_datasets(cfg)
 delete_dataset(cfg, dataset_id)
 
-# ── Ingestion ───────────────────────────────────────────────────────────────
+# ── Ingestion (all call Stellantis endpoints) ────────────────────────────────
 ingest_video(cfg, dataset_id, url, title,
              brand, car_model, year, market, trim, source_type, retrieval_date)
-ingest_pdf(cfg, dataset_id, file_path)
+ingest_pdf(cfg, dataset_id, file_path,
+           brand, car_model, year, market, trim, source_type, retrieval_date)
+ingest_html(cfg, dataset_id, source,
+            brand, car_model, year, market, trim, source_type, retrieval_date)
+ingest_image(cfg, dataset_id, source,
+             brand, car_model, year, market, trim, source_type, retrieval_date)
 
 # ── Processing ──────────────────────────────────────────────────────────────
 trigger_parsing(cfg, dataset_id, doc_id)
 wait_for_completion(cfg, dataset_id, doc_id, timeout, poll_interval)
 
-# ── Retrieval ───────────────────────────────────────────────────────────────
-retrieve_by_brand_model(cfg, brand, model, question,
-                        year, market, trim, source_type, top_n)
-retrieve(cfg, dataset_id, question, top_n, similarity_threshold)
+# ── Retrieval (calls /api/v1/stellantis/retrieve) ───────────────────────────
+retrieve_by_analysis_id(cfg, analysis_id, question,
+                        source_type, top_n, similarity_threshold)
 display_results(chunks, max_content_length)
 
 # ── Full pipeline runners ───────────────────────────────────────────────────
@@ -609,12 +625,12 @@ result = mcp.call("create_analysis_dataset", {
     "brand": "Opel", "car_model": "Corsa", "year": "2023", "market": "UK",
     "whisper_backend": "faster-whisper", "whisper_model": "large"
 })
-dataset_id = result["id"]
+analysis_id = result["id"]  # store this — used for all subsequent calls
 
 # 2. Ingest a YouTube video into that dataset
 mcp.call("ingest_video", {
-    "dataset_id": dataset_id,
-    "url": "https://www.youtube.com/watch?v=QFzEVtY_1lQ",
+    "dataset_id": analysis_id,
+    "url": "https://www.youtube.com/watch?v=VIDEO_ID",
     "title": "Opel Corsa 2023 review",
     "brand": "Opel", "car_model": "Corsa",
     "year": "2023", "market": "UK", "source_type": "Video"
@@ -622,15 +638,17 @@ mcp.call("ingest_video", {
 
 # 3. Ingest a PDF into the same dataset
 mcp.call("ingest_pdf", {
-    "dataset_id": dataset_id,
-    "file_path": "/ragflow/tests/Corsa_test.pdf"
+    "dataset_id": analysis_id,
+    "file_path": "/ragflow/tests/Corsa_PDF.pdf",
+    "brand": "Opel", "car_model": "Corsa",
+    "year": "2023", "market": "UK", "source_type": "Docs"
 })
 
-# 4. Query using metadata filtering
-chunks = mcp.call("retrieve_by_brand_model", {
-    "brand": "Opel", "model": "Corsa",
+# 4. Query by analysis_id — no brand+model scanning needed
+chunks = mcp.call("retrieve_by_analysis_id", {
+    "analysis_id": analysis_id,
     "question": "engine displacement and power output",
-    "year": "2023", "market": "UK", "source_type": "Video"
+    "source_type": "Video"  # optional filter
 })
 ```
 
@@ -654,4 +672,4 @@ chunks = mcp.call("retrieve_by_brand_model", {
 
 ---
 
-*Last updated: April 2026 | RagFlow v0.24.0 | Branch: `feature/youtube-ingestion` | One-dataset-per-analysis-run architecture | Metadata-driven filtering*
+*Last updated: 10 April 2026 | RagFlow v0.24.0 | Branch: `feature/stellantis-pipeline` | One-dataset-per-analysis-run | analysis_id retrieval | All 4 source types verified*
