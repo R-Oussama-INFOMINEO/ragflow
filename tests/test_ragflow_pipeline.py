@@ -194,7 +194,6 @@ async def create_analysis_dataset(
             json={
                 "name":            name,
                 "chunk_method":    "naive",
-                "embedding_model": "BAAI/bge-small-en-v1.5@Builtin",
                 "parser_config":   parser_config,
             },
         )
