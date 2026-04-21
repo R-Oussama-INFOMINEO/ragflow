@@ -1,0 +1,126 @@
+[tool.poetry]
+name = "ragflow-api"
+version = "1.0.0"
+description = "Internal Python client library for interacting with the RAGFlow API. Covers Datasets, Documents, Search/Retrieval, Tenants, and User management."
+authors = ["Infomineo <dev@infomineo.com>"]
+maintainers = ["Infomineo <dev@infomineo.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://github.com/infomineo/ragflow-api"
+repository = "https://github.com/infomineo/ragflow-api"
+documentation = "https://github.com/infomineo/ragflow-api#readme"
+keywords = ["ragflow", "rag", "retrieval", "knowledge-base", "llm", "infomineo"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+packages = [
+    { include = "ragflow_api", from = ".." },
+]
+include = [
+    "py.typed",
+    { path = "tests/data/**", format = ["sdist", "wheel"] },
+]
+
+[tool.poetry.scripts]
+"ragflow-api" = "ragflow_api._doctor:main"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# HTTP client — async-first
+aiohttp = "^3.10"
+
+# Retries
+tenacity = "^9.0"
+
+# Data validation and serialization
+pydantic = "^2.7"
+
+# Password encryption (RSA)
+pycryptodome = "^3.20"
+
+# Rich terminal output (used by test suite and optional logging)
+rich = "^14.0"
+
+# PDF processing (used in highlight/download utilities)
+pymupdf = "^1.24"
+
+# Async support
+anyio = "^4.4"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+pytest-asyncio = "^0.23"
+pytest-cov = "^5.0"
+ruff = "^0.4"
+mypy = "^1.10"
+pre-commit = "^3.7"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8.2"
+pytest-asyncio = "^0.23"
+rich = "^13.7"
+
+# ---------------------------------------------------------------------------
+# Build system
+# ---------------------------------------------------------------------------
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
+
+# ---------------------------------------------------------------------------
+# Tool configuration
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["."]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s %(levelname)s %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.isort]
+known-first-party = ["ragflow_api"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = true
+
+[tool.coverage.run]
+source = ["ragflow_api"]
+omit = ["*/__pycache__/*", "*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

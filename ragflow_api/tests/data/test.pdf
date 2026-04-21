@@ -1,0 +1,55 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]
+   /Resources << /Font << /F1 4 0 R >> >>
+   /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 768 >>
+stream
+BT
+/F1 18 Tf
+50 750 Td
+(RAGFlow API Doctor Test Document) Tj
+0 -40 Td
+/F1 12 Tf
+(This document is used by the ragflow-api integration test suite.) Tj
+0 -25 Td
+(It verifies that the RAGFlow server can ingest, chunk and retrieve text.) Tj
+0 -25 Td
+(Children in historical societies were often dressed as miniature adults.) Tj
+0 -25 Td
+(Fashion mirrored social status and adult norms in child clothing design.) Tj
+0 -25 Td
+(The miniature adult design philosophy reflected limited childhood autonomy.) Tj
+0 -25 Td
+(Knowledge graphs capture structured relationships between these concepts.) Tj
+0 -25 Td
+(RAPTOR summarisation condenses lengthy documents into hierarchical chunks.) Tj
+0 -25 Td
+(Table of contents extraction improves navigation and retrieval accuracy.) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000247 00000 n 
+0000000317 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1135
+%%EOF
